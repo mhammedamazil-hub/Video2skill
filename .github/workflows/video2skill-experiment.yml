@@ -1,0 +1,189 @@
+name: Video2Skill Learning Experiment
+
+on:
+  workflow_dispatch:
+    inputs:
+      video_url:
+        description: 'YouTube or direct video URL to learn from'
+        required: true
+        default: 'https://youtu.be/ih20l3pJoeU'
+      goal:
+        description: 'What capability should the skill teach?'
+        required: true
+        default: 'create a basic 3D cube and apply a material in Blender'
+      domain:
+        description: 'Domain / software area'
+        required: true
+        default: '3D modeling'
+      software:
+        description: 'Target software product'
+        required: true
+        default: 'Blender'
+      software_version:
+        description: 'Software version'
+        required: false
+        default: '4.0'
+      workflow:
+        description: 'Workflow description (reproduce or generalize)'
+        required: true
+        default: 'reproduce the tutorial step-by-step'
+      success_criteria:
+        description: 'How to verify the skill worked'
+        required: true
+        default: 'a Blender file with cube and material plus rendered image'
+      operating_system:
+        description: 'Operating system'
+        required: true
+        default: 'linux'
+      provider:
+        description: 'AI provider id (anthropic, openai, google, openai-compatible, local)'
+        required: false
+        default: ''
+      model:
+        description: 'Model id to use for examination'
+        required: false
+        default: ''
+  pull_request:
+    branches: [ main ]
+    types: [ opened, synchronize, reopened ]
+
+env:
+  VIDEO2SKILL_CONFIG_DIR: /tmp/v2s-ci
+  PYTHONUNBUFFERED: '1'
+
+jobs:
+  experiment:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install system dependencies (ffmpeg, yt-dlp)
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg yt-dlp
+          ffmpeg -version | head -1
+          yt-dlp --version
+
+      - name: Install Node dependencies and build CLI
+        run: |
+          npm ci
+          npm run build
+
+      - name: Install Python engine dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pyyaml requests imageio-ffmpeg
+
+      - name: Configure Video2Skill provider
+        run: |
+          if [ -n "${{ inputs.provider }}" ]; then
+            case "${{ inputs.provider }}" in
+              anthropic)
+                node dist/cli/index.js config provider anthropic \
+                  --default-model "${{ inputs.model || 'claude-3-5-sonnet-20241022' }}" \
+                  --set-default
+                ;;
+              openai)
+                node dist/cli/index.js config provider openai \
+                  --default-model "${{ inputs.model || 'gpt-4o' }}" \
+                  --set-default
+                ;;
+              google)
+                node dist/cli/index.js config provider google \
+                  --default-model "${{ inputs.model || 'gemini-1.5-pro' }}" \
+                  --set-default
+                ;;
+              openai-compatible)
+                node dist/cli/index.js config provider openai-compatible \
+                  --default-model "${{ inputs.model || 'local-model' }}" \
+                  --base-url "${OPENAI_COMPATIBLE_BASE_URL:-http://localhost:11434}" \
+                  --set-default
+                ;;
+              local)
+                node dist/cli/index.js config provider local \
+                  --default-model "${{ inputs.model || 'llama3.2' }}" \
+                  --base-url "${LOCAL_MODEL_BASE_URL:-http://localhost:11434}" \
+                  --set-default
+                ;;
+            esac
+          fi
+          node dist/cli/index.js config show
+
+      - name: Verify environment (doctor)
+        run: |
+          node dist/cli/index.js doctor || true
+
+      - name: Run the learning experiment
+        id: experiment
+        run: |
+          mkdir -p /tmp/v2s-ci
+          export V2S_GOAL="${{ inputs.goal }}"
+          export V2S_DOMAIN="${{ inputs.domain }}"
+          export V2S_SOFTWARE="${{ inputs.software }}"
+          export V2S_SOFTWARE_VERSION="${{ inputs.software_version }}"
+          export V2S_WORKFLOW="${{ inputs.workflow }}"
+          export V2S_SUCCESS_CRITERIA="${{ inputs.success_criteria }}"
+          export V2S_OPERATING_SYSTEM="${{ inputs.operating_system }}"
+          export V2S_OPERATE_SOFTWARE=true
+          export V2S_SANDBOX_ALLOWED=true
+          export V2S_PROVIDER="${{ inputs.provider }}"
+          export V2S_MODEL="${{ inputs.model }}"
+
+          python scripts/run_experiment.py "${{ inputs.video_url }}"
+          echo "experiment_exit_code=$?" >> "$GITHUB_OUTPUT"
+
+      - name: Upload experiment reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: video2skill-experiment-reports
+          path: |
+            /tmp/v2s-experiment-*/reports/
+          retention-days: 30
+
+      - name: Upload skill package
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: video2skill-generated-skill
+          path: |
+            /tmp/v2s-experiment-*/reports/skill_package/
+          retention-days: 30
+
+      - name: Upload evidence frames
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: video2skill-evidence
+          path: |
+            /tmp/v2s-experiment-*/perception/
+            /tmp/v2s-experiment-*/download/
+          retention-days: 30
+
+      - name: Print experiment summary
+        if: always()
+        run: |
+          echo "## Video2Skill Experiment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Video URL:** ${{ inputs.video_url }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Goal:** ${{ inputs.goal }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Provider:** ${{ inputs.provider || '(none configured)' }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Reports" >> $GITHUB_STEP_SUMMARY
+          echo "- [Experiment Report](artifacts/video2skill-experiment-reports/experiment.json)" >> $GITHUB_STEP_SUMMARY
+          echo "- [Baseline Results](artifacts/video2skill-experiment-reports/baseline_results.json)" >> $GITHUB_STEP_SUMMARY
+          echo "- [Skilled Results](artifacts/video2skill-experiment-reports/skilled_results.json)" >> $GITHUB_STEP_SUMMARY
+          echo "- [Comparison Report](artifacts/video2skill-experiment-reports/comparison_report.json)" >> $GITHUB_STEP_SUMMARY
+          echo "- [Conclusion](artifacts/video2skill-experiment-reports/conclusion.json)" >> $GITHUB_STEP_SUMMARY

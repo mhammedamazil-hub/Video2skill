@@ -1,0 +1,15 @@
+node_modules/
+dist/
+.env
+.env.local
+*.pyc
+__pycache__/
+*.log
+npm-debug.log*
+.yarn-integrity
+.video2skill/
+.DS_Store
+.coverage
+.turbo/
+.test-tutorial.mp4
+.tutorial_demo.mp4
