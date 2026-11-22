@@ -43,6 +43,9 @@ on:
         description: 'Model id to use for examination'
         required: false
         default: ''
+  pull_request:
+    branches: [ main ]
+    types: [ opened, synchronize, reopened ]
 
 env:
   VIDEO2SKILL_CONFIG_DIR: /tmp/v2s-ci
